@@ -89,7 +89,6 @@ import org.wildfly.plugins.bootablejar.maven.cli.LocalCLIExecutor;
 import org.wildfly.plugins.bootablejar.maven.cli.RemoteCLIExecutor;
 import org.wildfly.plugins.bootablejar.maven.common.FeaturePack;
 import org.wildfly.plugins.bootablejar.maven.common.MavenRepositoriesEnricher;
-import org.wildfly.plugins.bootablejar.maven.common.OverriddenArtifact;
 import org.wildfly.plugins.bootablejar.maven.common.Utils;
 import org.wildfly.plugins.bootablejar.maven.common.Utils.ProvisioningSpecifics;
 import org.wildfly.plugin.tools.bootablejar.BootLoggingConfiguration;
@@ -299,49 +298,6 @@ public abstract class AbstractBuildBootableJarMojo extends AbstractMojo {
      */
     @Parameter(alias = "bootable-jar-build-artifacts", property = "wildfly.bootable.jar.build.artifacts", defaultValue = "bootable-jar-build-artifacts")
     private String bootableJarBuildArtifacts;
-
-    /**
-     * Deprecated. A list of artifacts that override the one referenced in the WildFly
-     * Galleon feature-pack used to build the Bootable JAR. The artifacts
-     * present in this list must exist in the project dependencies (with a
-     * {@code provided} scope). GroupId and ArtifactId are mandatory.
-     * Classifier is required if non null. Version and Type are optional and are
-     * retrieved from the project dependencies. Dependencies on Galleon
-     * feature-pack can also be referenced from this list. {@code zip} type must be used for Galleon feature-packs.
-     * NB: This configuration item can't be used when Channels are in use.<br/>
-     *  Example of an override of the {@code io.undertow:undertow-core}
-     * artifact:<br/>
-     * &lt;overridden-server-artifacts&gt;<br/>
-     * &lt;artifact&gt;<br/>
-     * &lt;groupId&gt;io.undertow&lt;/groupId&gt;<br/>
-     * &lt;artifactId&gt;undertow-core&lt;/artifactId&gt;<br/>
-     * &lt;/artifact&gt;<br/>
-     * &lt;/overridden-server-artifacts&gt;<br/>
-     */
-    @Deprecated
-    @Parameter(alias = "overridden-server-artifacts")
-    List<OverriddenArtifact> overriddenServerArtifacts = Collections.emptyList();
-
-    /**
-     * Deprecated. Set this parameter to true in order to retrieve the set of artifacts that can be upgraded.
-     * The file `target/bootable-jar-build-artifacts/bootable-jar-server-original-artifacts.xml` is generated.
-     * It contains XML elements for the Galleon feature-packs dependencies, JBoss Modules runtime and artifacts.
-     * JBoss Modules modules artifacts are grouped by JBoss Modules name.
-     * The generated file contains only the artifacts that are provisioned by Galleon.
-     * Each artifact version is the one that would get installed when building the Bootable JAR without upgrade.
-     */
-    @Deprecated
-    @Parameter(alias = "dump-original-artifacts", property = "bootable.jar.dump.original.artifacts" , defaultValue = "false")
-    boolean dumpOriginalArtifacts;
-
-    /**
-     * Deprecated. The plugin prints a warning when an overridden artifact is downgraded (updated to an older version).
-     * The version comparison is done based on Maven versioning. This warning can be disabled by setting this parameter to
-     * true.
-     */
-    @Deprecated
-    @Parameter(alias = "disable-warn-for-artifact-downgrade", property = "bootable.jar.disable.warn.for.artifact.downgrade", defaultValue = "false")
-    boolean disableWarnForArtifactDowngrade;
 
     /**
      * When calling mvn 'install', the bootable JAR artifact is attached to the project with the classifier 'bootable'. Use this parameter to
@@ -1034,8 +990,6 @@ public abstract class AbstractBuildBootableJarMojo extends AbstractMojo {
         if (featurePackLocation != null) {
             if (isChannelsProvisioning()) {
                 featurePackLocation = formatLocation(featurePackLocation);
-            } else {
-                featurePackLocation = MavenUpgrade.locationWithVersion(featurePackLocation, artifactVersions);
             }
             featurePacks = new ArrayList<>();
             FeaturePack fp = new FeaturePack();
@@ -1046,8 +1000,6 @@ public abstract class AbstractBuildBootableJarMojo extends AbstractMojo {
                 if (fp.getLocation() != null) {
                     if (isChannelsProvisioning()) {
                         fp.setLocation(formatLocation(fp.getLocation()));
-                    } else {
-                        fp.setLocation(MavenUpgrade.locationWithVersion(fp.getLocation(), artifactVersions));
                     }
                 } else {
                     if (fp.getGroupId() == null || fp.getArtifactId() == null) {
@@ -1137,37 +1089,20 @@ public abstract class AbstractBuildBootableJarMojo extends AbstractMojo {
                 .build()) {
             IoUtils.recursiveDelete(home);
             getLog().info("Building server based on " + config.getFeaturePackDeps() + " galleon feature-packs");
-            MavenUpgrade mavenUpgrade = null;
-            GalleonProvisioningConfig newConfig;
-            if (isChannelsProvisioning()) {
-                if (!overriddenServerArtifacts.isEmpty()) {
-                    throw new MojoExecutionException("overridden-server-artifacts can't be configured when channels are configured.");
-                }
-                newConfig = config;
-            } else {
-                mavenUpgrade = new MavenUpgrade(this, pm, config);
-                // Dump artifacts
-                if (dumpOriginalArtifacts) {
-                    Path file = workDir.resolve("bootable-jar-server-original-artifacts.xml");
-                    getLog().info("Dumping original Maven artifacts in " + file);
-                    mavenUpgrade.dumpArtifacts(file);
-                }
-                newConfig = mavenUpgrade.upgrade();
-            }
             // store provisioning.xml
-            pm.storeProvisioningConfig(newConfig, outputProvisioningFile);
+            pm.storeProvisioningConfig(config, outputProvisioningFile);
 
             try {
-                scannedArtifacts = BootableJarSupport.scanArtifacts(pm, newConfig, new MvnMessageWriter(getLog()));
+                scannedArtifacts = BootableJarSupport.scanArtifacts(pm, config, new MvnMessageWriter(getLog()));
             } catch (Exception ex) {
                 throw new MojoExecutionException(ex);
             }
             PluginProgressTracker.initTrackers(pm, new MavenJBossLogger(getLog()));
-            pm.provision(newConfig);
+            pm.provision(config);
 
             if (!recordState) {
                 Path file = home.resolve(PLUGIN_PROVISIONING_FILE);
-                pm.storeProvisioningConfig(newConfig, file);
+                pm.storeProvisioningConfig(config, file);
             }
         }
     }
@@ -1219,17 +1154,6 @@ public abstract class AbstractBuildBootableJarMojo extends AbstractMojo {
         commands.add("deploy " + f.getAbsolutePath() + " --name=" + f.getName() + " --runtime-name=" + runtimeName);
     }
 
-    private OverriddenArtifact getOverriddenArtifact(String grpId, String artifactId) {
-        OverriddenArtifact ret = null;
-        for (OverriddenArtifact art : overriddenServerArtifacts) {
-            if(art.getGroupId().equals(grpId) && art.getArtifactId().equals(artifactId)) {
-                ret = art;
-                break;
-            }
-        }
-        return ret;
-    }
-
     private void buildJar(Path contentDir, Path jarFile) throws MojoExecutionException, IOException {
         Path rtJarFile = resolveArtifact(scannedArtifacts.getBoot());
         // Check if that is an older server for which we can't upgrade the jboss-modules dependency.
@@ -1237,20 +1161,8 @@ public abstract class AbstractBuildBootableJarMojo extends AbstractMojo {
         Path tmpDir = contentRoot.resolve("tmp_runtime");
         Files.createDirectories(tmpDir);
         ZipUtils.unzip(rtJarFile, tmpDir);
-        OverriddenArtifact modules = getOverriddenArtifact(BootableJarSupport.JBOSS_MODULES_GROUP_ID, BootableJarSupport.JBOSS_MODULES_ARTIFACT_ID);
-        Path jbossModulesDependency = tmpDir.resolve("META-INF").resolve("maven").resolve(BootableJarSupport.JBOSS_MODULES_GROUP_ID).
-                resolve(BootableJarSupport.JBOSS_MODULES_ARTIFACT_ID).resolve("pom.xml");
-        if (Files.exists(jbossModulesDependency)) {
-            if (modules != null) {
-                getLog().warn("Bootable JAR dependency on jboss-modules can't be upgraded, you must use a more recent version of the server.");
-            }
-        } else {
-            if (modules != null) {
-                scannedArtifacts.getJbossModules().setVersion(modules.getVersion());
-            }
-            Path jbossModulesFile = resolveArtifact(scannedArtifacts.getJbossModules());
-            ZipUtils.unzip(jbossModulesFile, contentDir);
-        }
+        Path jbossModulesFile = resolveArtifact(scannedArtifacts.getJbossModules());
+        ZipUtils.unzip(jbossModulesFile, contentDir);
         ZipUtils.unzip(rtJarFile, contentDir);
         updateManifest(contentDir);
         ZipUtils.zip(contentDir, jarFile);

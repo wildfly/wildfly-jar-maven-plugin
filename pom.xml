@@ -71,7 +71,7 @@
     <version.org.wildfly.core.wildfly-core>27.0.0.Final</version.org.wildfly.core.wildfly-core>
     <version.org.wildfly.launcher>1.0.0.Final</version.org.wildfly.launcher>
     <version.org.wildfly.common>1.7.0.Final</version.org.wildfly.common>
-    <version.org.wildfly.plugins.wildfly-plugin-tools>1.2.0.Final</version.org.wildfly.plugins.wildfly-plugin-tools>
+    <version.org.wildfly.plugins.wildfly-plugin-tools>2.0.0.Alpha1</version.org.wildfly.plugins.wildfly-plugin-tools>
     <version.org.wildfly.channel>1.2.1.Final</version.org.wildfly.channel>
     <version.org.wildfly.prospero>1.3.0.Final</version.org.wildfly.prospero>
     <maven.surefire.plugin>3.0.0-M6</maven.surefire.plugin>

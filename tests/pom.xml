@@ -154,7 +154,6 @@
                     <reuseForks>false</reuseForks>
                     <redirectTestOutputToFile>${surefire.redirect.to.file}</redirectTestOutputToFile>
                     <systemPropertyVariables>
-                        <test.version.wildfly-ee.upgrade>${test.version.wildfly-ee.upgrade}</test.version.wildfly-ee.upgrade>
                         <test.version.wildfly>${test.version.wildfly}</test.version.wildfly>
                         <test.plugin.version>${project.version}</test.plugin.version>
                         <jbossas.dist>${jbossas.dist}</jbossas.dist>

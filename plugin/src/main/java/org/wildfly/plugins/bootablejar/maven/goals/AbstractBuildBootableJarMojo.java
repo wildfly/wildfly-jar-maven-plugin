@@ -38,18 +38,22 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
+import java.util.Set;
 import java.util.jar.Manifest;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import static java.util.stream.Collectors.toSet;
 import javax.xml.stream.XMLStreamException;
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.artifact.DefaultArtifact;
 import org.apache.maven.artifact.handler.DefaultArtifactHandler;
 import org.apache.maven.execution.MavenSession;
+import org.apache.maven.model.Dependency;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
@@ -63,6 +67,9 @@ import org.codehaus.plexus.configuration.PlexusConfigurationException;
 import org.eclipse.aether.RepositorySystem;
 import org.eclipse.aether.RepositorySystemSession;
 import org.eclipse.aether.repository.RemoteRepository;
+import org.eclipse.aether.resolution.ArtifactRequest;
+import org.eclipse.aether.resolution.ArtifactResolutionException;
+import org.eclipse.aether.resolution.ArtifactResult;
 import org.jboss.galleon.Constants;
 import org.jboss.galleon.ProvisioningDescriptionException;
 import org.jboss.galleon.ProvisioningException;
@@ -356,6 +363,9 @@ public abstract class AbstractBuildBootableJarMojo extends AbstractMojo {
     private boolean forkCli;
     private ScannedArtifacts scannedArtifacts;
 
+    @Parameter(alias = "deployClassifiers", property = "bootable.jar.deploy.artifact.classifier", defaultValue = ",")
+    private Set<String> deployClassifiers;
+
     public Path getJBossHome() {
         return wildflyDir;
     }
@@ -381,7 +391,7 @@ public abstract class AbstractBuildBootableJarMojo extends AbstractMojo {
         }
 
         artifactVersions = MavenProjectArtifactVersions.getInstance(project);
-        validateProjectFile();
+        validateProjectFiles();
 
         if (isPackageDev()) {
             Path deployments = getDeploymentsDir();
@@ -554,15 +564,20 @@ public abstract class AbstractBuildBootableJarMojo extends AbstractMojo {
             getLog().info("Hollow jar, No application deployment added to server.");
             return;
         }
-        File f = validateProjectFile();
+        Set<File> files = validateProjectFiles();
 
-        String fileName = f.getName();
-        if (project.getPackaging().equals(WAR) || fileName.endsWith(WAR)) {
-            if (contextRoot) {
-                fileName = "ROOT." + WAR;
+        files.addAll(resolveDeployArtifacts());
+
+        for (File f : files) {
+            String fileName = f.getName();
+            if (project.getPackaging().equals(WAR) || fileName.endsWith(WAR)) {
+                if (contextRoot) {
+                    fileName = "ROOT." + WAR;
+                }
             }
+
+            Files.copy(f.toPath(), targetDir.resolve(fileName));
         }
-        Files.copy(f.toPath(), targetDir.resolve(fileName));
     }
 
     protected Path getDeploymentsDir() {
@@ -573,9 +588,9 @@ public abstract class AbstractBuildBootableJarMojo extends AbstractMojo {
 
     }
 
-    protected File validateProjectFile() throws MojoExecutionException {
-        File f = getProjectFile();
-        if (f == null && !hollowJar) {
+    protected Set<File> validateProjectFiles() throws MojoExecutionException {
+        Set<File> f = getProjectFiles(deployClassifiers);
+        if (f.isEmpty() && !hollowJar) {
             throw new MojoExecutionException("Cannot package without a primary artifact; please `mvn package` prior to invoking wildfly-jar:package from the command-line");
         }
         return f;
@@ -717,9 +732,28 @@ public abstract class AbstractBuildBootableJarMojo extends AbstractMojo {
         return props;
     }
 
-    private File getProjectFile() {
-        if (this.project.getArtifact().getFile() != null) {
-            return this.project.getArtifact().getFile();
+    private Set<File> getProjectFiles(Set<String> classiferFilters) {
+        List<Artifact> artifacts = new ArrayList();
+        artifacts.addAll(this.project.getAttachedArtifacts());
+        artifacts.add(project.getArtifact());
+        Set<File> attachedFiles = artifacts.stream()
+          .filter(
+            a->classiferFilters.contains(a.getClassifier()) 
+              || (a.getClassifier()==null 
+                && classiferFilters.contains(null)))
+          .map(a->a.getFile())
+          .collect(toSet());
+
+        if (attachedFiles.isEmpty()) {
+            if(this.project.getArtifact() == null) { 
+                throw new IllegalArgumentException("No attached artifacts");
+            }
+            debug("adding default classifier as no classifiers matched");
+            attachedFiles = Set.of(this.project.getArtifact().getFile());
+        }
+
+        if (!attachedFiles.isEmpty()) {
+            return attachedFiles;
         }
 
         String finalName = this.project.getBuild().getFinalName();
@@ -727,7 +761,7 @@ public abstract class AbstractBuildBootableJarMojo extends AbstractMojo {
         Path candidate = Paths.get(this.projectBuildDir, finalName + "." + this.project.getPackaging());
 
         if (Files.exists(candidate)) {
-            return candidate.toFile();
+            return Set.of(candidate.toFile());
         }
         return null;
     }
@@ -813,6 +847,16 @@ public abstract class AbstractBuildBootableJarMojo extends AbstractMojo {
         }
         return hasLayers ? new LayersFeaturePacksConfig(state) : new DefaultFeaturePacksConfig(provisionedConfigId, state);
     }
+    
+    private org.eclipse.aether.artifact.Artifact toAetherArtifact(Dependency dependency) {
+        return new org.eclipse.aether.artifact.DefaultArtifact(
+          dependency.getGroupId(),
+          dependency.getArtifactId(),
+          dependency.getClassifier(),
+          dependency.getType(),
+          dependency.getVersion()
+        );
+}
 
     private interface GalleonConfig {
 
@@ -1143,15 +1187,21 @@ public abstract class AbstractBuildBootableJarMojo extends AbstractMojo {
             getLog().info("Hollow jar, No application deployment added to server.");
             return;
         }
-        File f = validateProjectFile();
 
-        String runtimeName = f.getName();
-        if (project.getPackaging().equals(WAR) || runtimeName.endsWith(WAR)) {
-            if (contextRoot) {
-                runtimeName = "ROOT." + WAR;
+        Set<File> files = validateProjectFiles();
+        files.addAll(resolveDeployArtifacts());
+        
+        for (File f : files) {
+            String runtimeName = f.getName();
+            if (project.getPackaging().equals(WAR) || runtimeName.endsWith(WAR)) {
+                if (contextRoot) {
+                    runtimeName = "ROOT." + WAR;
+                }
             }
+            String cmdLine; 
+            commands.add(cmdLine = "deploy " + f.getAbsolutePath() + " --name=" + f.getName() + " --runtime-name=" + runtimeName);
+            getLog().info(cmdLine);
         }
-        commands.add("deploy " + f.getAbsolutePath() + " --name=" + f.getName() + " --runtime-name=" + runtimeName);
     }
 
     private void buildJar(Path contentDir, Path jarFile) throws MojoExecutionException, IOException {
@@ -1279,5 +1329,56 @@ public abstract class AbstractBuildBootableJarMojo extends AbstractMojo {
                 .setClassifier(coordinate.getClassifier());
         artifactResolver.resolve(artifact);
         return artifact.getPath();
+    }
+
+
+    @Parameter
+    private List<Dependency> deployArtifacts;
+
+
+    @SuppressWarnings("unchecked")
+    public Set<File> resolveDeployArtifacts() throws MojoExecutionException {
+
+        if (deployArtifacts == null || deployArtifacts.isEmpty()) {
+            getLog().info("No artifacts configured for deployment.");
+            return Collections.EMPTY_SET;
+        }
+
+        Set<File> deployFiles = new HashSet<File>();
+        
+        Set<ArtifactRequest> requests = deployArtifacts.stream().map(deployArtifact-> {
+            ArtifactRequest request = new ArtifactRequest();
+              request.setArtifact(toAetherArtifact(deployArtifact));
+              //request.setRepositories(remoteRepositories);
+              return request;
+        }).collect(toSet());
+
+        List<ArtifactResult> resolveArtifacts = null;
+
+        try {
+            resolveArtifacts = repoSystem.resolveArtifacts(repoSession,requests);
+        } catch (ArtifactResolutionException ex) {
+            throw new MojoExecutionException(ex);
+        }
+
+        for (ArtifactResult deployArtifact : resolveArtifacts) {
+            if (!deployArtifact.isResolved())
+                throw new MojoExecutionException("Could not resolve artifact: " + deployArtifact);
+            else {
+                File artifactFile = deployArtifact.getArtifact().getFile();
+                
+                if (artifactFile == null || !artifactFile.exists()) {
+                    throw new MojoExecutionException(
+                      "Artifact file not found: " + deployArtifact.getArtifact()
+                    );
+                }
+                
+                getLog().info(
+                  "Resolved artifact: " + artifactFile.getAbsolutePath()
+                );
+                deployFiles.add(artifactFile);
+            }
+        }
+        return deployFiles;
     }
 }
